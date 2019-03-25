@@ -6,29 +6,36 @@ from torch.autograd import Variable
 
 
 class Stick:
+    runTimes = 100
+
     def __init__(self):
         self.env = gym.make('CartPole-v0')
 
     def getAct(self, isTrain):
         return self.env.action_space.sample()
 
-    def stepData(self, ob, reward, isTrain):
+    def stepData(self, ob, reward, done, isTrain):
+        pass
+    
+    def initRun(self, isTrain):
         pass
 
     def run(self, isTrain):
         count = 0
-        for ep in range(100):
+        for ep in range(self.runTimes):
             ob = self.env.reset()
+            self.initRun(isTrain)
             for i in range(1000):
                 self.env.render()
-                act = self.getAct()
+                act = self.getAct(isTrain)
                 ob, reward, done, info = self.env.step(act)
-                self.stepData(ob, reward)
+                self.stepData(ob, reward, done, isTrain)
                 if done:
                     count += i
                     break
         self.env.close()
-        print(count / 100)
+        if not isTrain:
+            print(count / self.runTimes)
 
 
 class StickHardCore(Stick):
@@ -41,7 +48,7 @@ class StickHardCore(Stick):
         else:
             return 1
 
-    def stepData(self, ob, reward, isTrain):
+    def stepData(self, ob, reward, done, isTrain):
         self.lastAng = ob[2]
 
 
@@ -61,62 +68,72 @@ class Net(torch.nn.Module):
     def forward(self, x):
         for l in self.hidden:
             x = torch.sigmoid(l(x))
-        x = torch.sigmoid(self.out(x))
+        x = self.out(x)
         return x
 
     def initParam(self, rate):
         self.rate = rate
         self.opt = torch.optim.SGD(self.parameters(), lr=self.rate)
 
-    def train(self, x, y):
-        lossFun = torch.nn.CrossEntropyLoss()
-        for i in range(200):
+    def train(self, x, y, times):
+        lossFun = torch.nn.MSELoss()
+        for i in range(times):
             out = self(x)
-            o = torch.cat((out, 1 - out), 1)
-            loss = lossFun(o, y)
+            # o = torch.cat((out, 1 - out), 1)
+            loss = lossFun(out, y)
             self.opt.zero_grad()
             loss.backward()
             self.opt.step()
 
-
-# 分别生成2组各100个数据点，增加正态噪声，后标记以y0=0 y1=1两类标签，最后cat连接到一起
-n_data = torch.ones(100, 2)
-# torch.normal(means, std=1.0, out=None)
-x0 = torch.normal(2*n_data, 1)  # 以tensor的形式给出输出tensor各元素的均值，共享标准差
-y0 = torch.zeros(100)
-x1 = torch.normal(-2*n_data, 1)
-y1 = torch.ones(100)
-x = torch.cat((x0, x1), 0).type(torch.FloatTensor)  # 组装（连接）
-y = torch.cat((y0, y1), 0).type(torch.LongTensor)
-# x, y = Variable(x), Variable(y)
-
-net = Net(2, [10], 1)
-net.initParam(0.05)
-net.train(x, y)
-
-pre = net(x)
-count = 0
-for i in range(200):
-    p = pre[i]
-    if y[i] == 0 and p.data[0] > 0.5:
-        count += 1
-    if y[i] == 1 and p.data[0] <= 0.5:
-        count += 1
-print(count)
-# test = torch.tensor([-1, -1]).type(torch.FloatTensor)
-# print(net(test))
-
-
 class StickNN(Stick):
 
+    x = None
+    y = None
+    acts = None
+    lastOb = [0, 0, 0, 0]
+
     def __init__(self):
-        return super().__init__(4, 20, 1)
+        Stick.__init__(self)
+        self.nn = Net(4, [10], 1)
+        self.nn.initParam(0.01)
 
     def getAct(self, isTrain):
-        return 0
+        input = torch.tensor(self.lastOb).type(torch.FloatTensor)
+        act = self.nn(input).tolist()
+        act = 1 if act[0] > 0 else 0
+        if isTrain:
+            self.acts.append(act)
+        return act
+    
+    def initRun(self, isTrain):
+        self.lastOb = [0, 0, 0, 0]
+        self.x = []
+        self.acts = []
+        self.x.append(self.lastOb)
 
-    def stepData(self, ob, reward, isTrain):
-        pass
+    def stepData(self, ob, reward, done, isTrain):
+        self.lastOb = ob
+        if not isTrain:
+            return
+        if not done:
+            self.x.append(ob)
+        else:
+            self.y = [0 for i in range(len(self.x))]
+            lastAng = self.x[len(self.x) - 1][2]
+            setOne = False
+            factor = 1
+            for i in range(len(self.x) - 1, -1, -1):
+                if not setOne and ((self.x[i][2] < 0 and lastAng > 0) or (self.x[i][2] > 0 and lastAng < 0)):
+                    setOne = True
+                if setOne:
+                    self.y[i] = -1 if self.acts[i] == 0 else 1
+                else:
+                    self.y[i] = -10 * \
+                        factor if self.acts[i] == 1 else 10 * factor
+                    factor *= 0.9
+            x = torch.tensor(self.x).type(torch.FloatTensor)
+            y = torch.tensor(self.y).type(torch.FloatTensor)
+            self.nn.train(x, y, 200)
 
 # print("random:")
 # stickRandom = Stick()
@@ -137,6 +154,23 @@ class StickNN(Stick):
 # 41.79
 
 
-# stick100 = StickNN()
+snn = StickNN()
+# snn.run(True)
+# print("nn run 100")
 # for i in range(3):
-#     stick100.run(False)
+#     snn.run(False)
+# nn run 100
+# 34.77
+# 34.54
+# 34.74
+
+snn.runTimes = 200
+snn.run(True)
+print("nn run 200")
+snn.runTimes = 100
+for i in range(3):
+    snn.run(False)
+# nn run 200
+# 58.42
+# 60.83
+# 62.32
