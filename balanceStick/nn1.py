@@ -79,26 +79,17 @@ def score(env):
             if done:
                 count += i
                 break
-    return count / 50
+    return count
 
 
 def train(x, acts, outX, outY):
-    y = [0 for i in range(len(x))]
     lastAng = x[len(x) - 1][2]
-    invert = True
-    f = 1
     for i in range(len(x) - 1, -1, -1):
-        if not invert and ((x[i][2] < 0 and lastAng > 0) or (x[i][2] > 0 and lastAng < 0)):
-            invert = False
-        if not invert:
-            if acts[i] > 0:
-                y[i] = max(acts[i], 1)
-            else:
-                y[i] = min(acts[i], -1)
-        else:
-            y[i] = -10 if acts[i] > 0 else 10
-    outX.extend(x)
-    outY.extend(y)
+        if (x[i][2] < 0 and lastAng > 0) or (x[i][2] > 0 and lastAng < 0):
+            break
+        outX.append(x[i])
+        y = -10 if acts[i] > 0 else 10
+        outY.append(y)
 
 
 def run(runTimes):
@@ -108,10 +99,9 @@ def run(runTimes):
     count = 0
     trainX = None
     trainActs = None
-    rate = 0.01
     inputX = []
     inputY = []
-    param = None
+    rate = 0.01
     for ep in range(runTimes):
         ob = env.reset()
         if isTrain:
@@ -133,25 +123,23 @@ def run(runTimes):
                         x = torch.tensor(inputX).type(torch.FloatTensor)
                         y = torch.tensor(inputY).type(torch.FloatTensor)
                         nn.initParam(rate)
-                        rate *= 0.5
                         nn.train(x, y, 200)
                         inputX = []
                         inputY = []
                         trainCount = 0
-                        s = score(env)
-                        if s > maxScore:
-                            maxScore = s
-                            print("score " + str(s))
-                            nn.cacheParameter()
-                            param = nn.cacheP
+                        rate *= 0.5
+                        # s = score(env)
+                        # if s < maxScore:
+                        #     nn.applyCachedParameter()
+                        # else:
+                        #     maxScore = s
+                        #     nn.cacheParameter()
                 break
     env.close()
     if not isTrain:
         count /= runTimes
         print(count)
     else:
-        nn.cacheP = param
-        nn.applyCachedParameter()
         print("finish train")
 
 
@@ -169,5 +157,7 @@ def test():
     run(100)
 
 
-for i in range(3):
-    test()
+test()
+
+
+# 20

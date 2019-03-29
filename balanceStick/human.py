@@ -4,15 +4,19 @@ import time
 
 step = 0.03
 leftDown = False
+
+
 def onKeyDown(key, mod):
     if key == 65361:
-        global leftDown 
+        global leftDown
         leftDown = True
+
 
 def onKeyUp(key, mod):
     if key == 65361:
-        global leftDown 
+        global leftDown
         leftDown = False
+
 
 def run(runTimes):
     env = gym.make('CartPole-v0')
@@ -33,6 +37,7 @@ def run(runTimes):
                 time.sleep(step)
     env.close()
     print(count / runTimes)
+
 
 run(100)
 # 21.5

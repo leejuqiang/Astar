@@ -1,6 +1,7 @@
 import gym
 import torch
 
+
 def run(runTimes):
     env = gym.make('CartPole-v0')
     count = 0
@@ -15,6 +16,7 @@ def run(runTimes):
                 break
     env.close()
     print(count / runTimes)
+
 
 for i in range(3):
     run(100)
