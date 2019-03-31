@@ -32,9 +32,9 @@ def run(runTimes):
             ob, reward, done, info = env.step(act)
             if done:
                 count += i
+                print("score " + str(i))
                 break
-            else:
-                time.sleep(step)
+            time.sleep(step)
     env.close()
     print(count / runTimes)
 
