@@ -101,6 +101,7 @@ def train(runTimes):
                     updateTable(states[i], states[i + 1], acts[i], rewards[i])
                 s = score()
                 if s > maxS:
+                    maxS = s
                     maxTable = []
                     maxTable.append(table[0].copy())
                     maxTable.append(table[1].copy())
@@ -129,6 +130,6 @@ table = train(200)
 for i in range(3):
     run(100)
 
-# 21.5
-# 20.72
-# 20.75
+# 157.17
+# 166.1
+# 157.68
