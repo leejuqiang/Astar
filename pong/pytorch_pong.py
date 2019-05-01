@@ -98,6 +98,9 @@ class Agent(object):
         action_batch = batch[:, 1]
         next_state_batch = batch[:, 2]
         reward_batch = batch[:, 3]
+        q_values = []
+        for s in state_batch:
+            q_values.append()
 
         optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
         for epoch in range(1):
