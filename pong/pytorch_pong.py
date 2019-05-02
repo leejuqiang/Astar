@@ -1,6 +1,5 @@
 # https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html
 
-import math
 import random
 import gym
 
@@ -11,25 +10,29 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torchvision.transforms as T
 from torch.autograd import Variable
-from utils.image_processing import preprocess_observation
+from utils.image_processing import get_screen
 from torch.utils.data import Dataset, DataLoader
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-UP_ACTION = 2
-DOWN_ACTION = 3
+#DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = "cpu"
+ALPHA = 0.0001
+UP_ACTION = 0
+DOWN_ACTION = 1
 GAMMA = 0.99
+TRAIN_EPISODE = 5
 
 class ReplayMemory(object):
     def __init__(self, memory_capacity):
         self.memory = []
+        self.memory_capacity = memory_capacity
         self.position = 0
 
     def __len__(self):
         return len(self.memory)
 
-    def push_all(self, list_of_state_action_rewards):
-        for data in list_of_state_action_rewards):
-            self._push(data[0], data[1], data[2], data[3])
+    def push_all(self, states, actions, next_states, rewards):
+        for i in range(len(states)):
+            self._push(states[i], actions[i], next_states[i], rewards[i])
 
     def _push(self, state, action, next_state, reward):
         data = [state, action, next_state, reward]
@@ -52,8 +55,7 @@ class PixelDQN(torch.nn.Module):
         self.bn3 = nn.BatchNorm2d(32)
 
         self.optimizer = optim.RMSprop(self.parameters(), lr=ALPHA)
-        self.loss = nn.MSELoss()
-        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        self.device = DEVICE
         self.to(self.device)
 
         # Number of Linear input connections depends on output of conv2d layers
@@ -67,7 +69,7 @@ class PixelDQN(torch.nn.Module):
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
-    def forward(self, observation):
+    def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
@@ -88,38 +90,34 @@ class Agent(object):
     """
     def get_action(self, state, epsilon=0.5, random_exploration=0.2):
         rand_prob = random.random()
-        if random_explore == 1 or rand_prob < epsilon:
-            return random.randint(UP_ACTION, DOWN_ACTION)
-        return self.policy_net(state)
+        ##if random_explore == 1 or rand_prob < epsilon:
+        ##    return random.randint(UP_ACTION, DOWN_ACTION)
+        ##return self.policy_net(state)
+        return random.randint(UP_ACTION, DOWN_ACTION)
 
-    def optimize(self, memory):
-        optimizer = optim.RMSProp(self.pociy_net.parameters())
-        for i, batch in enumerate(len(memory) / BATCH_SIZE):
-            batch = memory.sample(BATCH_SIZE)
-            state_batch = torch.tensor(batch[:, 0], dtype=torch.int8)
-            action_batch = torch.tensor(batch[:, 1], dtype=torch.int8)
-            next_state_batch = torch.tensor(batch[:, 2], dtype=torch.int8)
-            reward_batch = torch.tensor(batch[:, 3], dtype=torch.float)
-            q_values = []
-            for s in state_batch:
-                q_values.append()
+    def optimize(self, memory, batch_size):
+        optimizer = optim.RMSprop(self.policy_net.parameters())
+        loss_func = nn.MSELoss()
+        for i, batch in enumerate(range(int(len(memory) / batch_size))):
+            batch = memory.sample(batch_size)
+            batch = list(zip(*batch)) # List of columns
+            state_batch = torch.tensor(batch[0], dtype=torch.int8)
+            action_batch = torch.tensor(batch[1], dtype=torch.int8)
+            next_state_batch = torch.tensor(batch[2], dtype=torch.int8)
+            reward_batch = torch.tensor(batch[3], dtype=torch.float)
 
-        optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
-        for epoch in range(1):
-            running_loss = 0.0
-            for i, (data, label) in enumerate(dataloader):
-                optimizer.zero_grad()
-                data = Variable(data.view(-1, 128))
-                label = Variable(label)
+            #np.amax(a, axis=1)
+            target_rewards = np.amax(self.target_net(next_state_batch), axis=1) * GAMMA +\
+                                     reward_batch
+            policy_rewards = self.policy_net(state_batch).gather(1, action_batch)
+            loss = loss_func(policy_rewards, target_rewards)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-                output = model(data)
-                loss = criterion(output, label)
-                loss.backward()
-                optimizer.step()
-        if update_count % TARGET_UPDATE == 0:
-            self._update_policy_net()
+            self._update_target_net()
 
-    def _update_policy_net(self):
+    def _update_target_net(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
 """ Assigns the reward to individual observations in a given sequence of observations in
@@ -128,7 +126,7 @@ class Agent(object):
     :param label: True reward of the sequence of events
     :return: Rewards with discounted factor
 """
-def assign_reward(rewards, label):
+def assign_rewards(rewards, label):
     rewards = [label * GAMMA**(len(rewards)-i) for i, x in enumerate(rewards)]
     return rewards
 
@@ -136,57 +134,56 @@ def main():
     num_classes = 2
     h = 64
     w = 64
+    batch_size = 8
+    num_episodes = 10
 
     seed = 42
     env = gym.make('Pong-v4')
     env.reset()
 
-    model = PixelDQN(w, h, num_classes)
+    policy_net = PixelDQN(w, h, num_classes)
+    target_net = PixelDQN(w, h, num_classes)
+    target_net.load_state_dict(policy_net.state_dict())
+    agent = Agent(policy_net, target_net)
+
     memory = ReplayMemory(64)
 
-    num_episodes = 10
-    episode_start_frame = 0
-    episode_end_frame = 0
     for i_episode in range(num_episodes):
         states = []
         actions = []
         next_states = []
         rewards = []
 
-        current_observation = get_screen()
-        previous_observation = get_screent()
+        current_observation = get_screen(env)
+        previous_observation = get_screen(env)
         state = current_observation - previous_observation
         while True:
-            episode_end_frame += 1
-            action = get_action(state)
-            _, reward, done, _ = env.step(action)
+            action = agent.get_action(state)
+            act = 2 if action == 0 else 3
+            _, reward, done, _ = env.step(act)
 
             previous_observation = current_observation
-            current_observation = get_screen()
+            current_observation = get_screen(env)
             next_state = current_observation - previous_observation
             # Assign reward according to label
             states.append(state)
             actions.append(action)
             next_states.append(next_state)
             rewards.append(reward)
-            episode_states.append([state, action, next_state, reward])
 
             # Match has ended
             if reward != 0:
                 reward = np.sign(reward) # cap the score between -1 and 1
-                rewards = assign_rewards(rewards)
-                memory.add_all(zip(states, actions, next_states, rewards)
+                rewards = assign_rewards(rewards, reward)
+                memory.push_all(states, actions, next_states, rewards)
             state = next_state
 
             if done:
                 next_state = None
-                episode_states = []
-                episode_start_frame = 0
-                episode_end_frame = 0
                 break
 
         if i_episode % TRAIN_EPISODE == 0:
-            optimize(memory)
+            agent.optimize(memory, batch_size)
             memory = ReplayMemory(64)
 
 if __name__ == "__main__":
