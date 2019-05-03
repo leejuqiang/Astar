@@ -65,7 +65,8 @@ class PixelDQN(torch.nn.Module):
         convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
         convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
         linear_input_size = convw * convh * 32
-        self.head = nn.Linear(linear_input_size, num_classes)
+        #self.head = nn.Linear(linear_input_size, num_classes)
+        self.head = nn.Linear(1568, num_classes)
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
@@ -73,7 +74,9 @@ class PixelDQN(torch.nn.Module):
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
-        return self.head(x.view(x.size(0), -1))
+        x = x.view(-1, 32*7*7)
+        #return self.head(x.view(x.size(0), -1))
+        return self.head(x)
 
 class Agent(object):
     def __init__(self, policy_net, target_net):
@@ -88,34 +91,39 @@ class Agent(object):
         :param random_explore: Probability to return a random move
         :return: Action to perform
     """
-    def get_action(self, state, epsilon=0.5, random_exploration=0.2):
+    def get_action(self, state, epsilon=0.5):
         rand_prob = random.random()
-        ##if random_explore == 1 or rand_prob < epsilon:
-        ##    return random.randint(UP_ACTION, DOWN_ACTION)
-        ##return self.policy_net(state)
-        return random.randint(UP_ACTION, DOWN_ACTION)
+        if rand_prob < epsilon:
+            return random.randint(UP_ACTION, DOWN_ACTION)
+        state = np.expand_dims(state, 0)
+        return np.argmax(self.policy_net(torch.tensor(state, dtype=torch.float)).tolist())
 
     def optimize(self, memory, batch_size):
         optimizer = optim.RMSprop(self.policy_net.parameters())
         loss_func = nn.MSELoss()
+        print(len(memory))
         for i, batch in enumerate(range(int(len(memory) / batch_size))):
+        #for i, batch in enumerate(range((len(memory) / batch_size))):
+            if i == 500:
+                break
             batch = memory.sample(batch_size)
             batch = list(zip(*batch)) # List of columns
-            state_batch = torch.tensor(batch[0], dtype=torch.int8)
-            action_batch = torch.tensor(batch[1], dtype=torch.int8)
-            next_state_batch = torch.tensor(batch[2], dtype=torch.int8)
+            state_batch = torch.tensor(batch[0], dtype=torch.float)
+            action_batch = torch.tensor(batch[1], dtype=torch.long)
+            next_state_batch = torch.tensor(batch[2], dtype=torch.float)
             reward_batch = torch.tensor(batch[3], dtype=torch.float)
 
             #np.amax(a, axis=1)
-            target_rewards = np.amax(self.target_net(next_state_batch), axis=1) * GAMMA +\
-                                     reward_batch
+            a = self.target_net(next_state_batch).tolist()
+            target_rewards = np.amax(a, axis=1) * GAMMA + reward_batch.tolist()
+            target_rewards = torch.tensor(target_rewards, dtype=torch.float)
             policy_rewards = self.policy_net(state_batch).gather(1, action_batch)
             loss = loss_func(policy_rewards, target_rewards)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            self._update_target_net()
+        self._update_target_net()
 
     def _update_target_net(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -127,17 +135,17 @@ class Agent(object):
     :return: Rewards with discounted factor
 """
 def assign_rewards(rewards, label):
-    rewards = [label * GAMMA**(len(rewards)-i) for i, x in enumerate(rewards)]
+    rewards = [label * 0.99**(len(rewards)-i) for i, x in enumerate(rewards)]
+    #rewards = [label] * len(rewards)
     return rewards
 
 def main():
     num_classes = 2
     h = 64
     w = 64
-    batch_size = 8
-    num_episodes = 10
+    batch_size = 32
+    num_episodes = 200
 
-    seed = 42
     env = gym.make('Pong-v4')
     env.reset()
 
@@ -146,45 +154,78 @@ def main():
     target_net.load_state_dict(policy_net.state_dict())
     agent = Agent(policy_net, target_net)
 
-    memory = ReplayMemory(64)
+    memory = ReplayMemory(1000000)
 
-    for i_episode in range(num_episodes):
-        states = []
-        actions = []
-        next_states = []
-        rewards = []
+    PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/weight"
+    train = True
+    epsilon = 0.5
+    if train:
+        for i_episode in range(1, num_episodes+1):
+            episode_reward = 0
+            #print("i_episode: %d" % i_episode)
+            states = []
+            actions = []
+            next_states = []
+            rewards = []
 
-        current_observation = get_screen(env)
-        previous_observation = get_screen(env)
-        state = current_observation - previous_observation
-        while True:
-            action = agent.get_action(state)
+            env.reset()
+            #env.render()
+            current_observation = get_screen(env)
+            previous_observation = get_screen(env)
+            state = current_observation
+            while True:
+                #env.render()
+                action = agent.get_action(state, epsilon=1)
+                act = 2 if action == 0 else 3
+                _, reward, done, _ = env.step(act)
+
+                previous_observation = current_observation
+                current_observation = get_screen(env)
+                next_state = current_observation - previous_observation
+                # Assign reward according to label
+                states.append(state)
+                actions.append([action])
+                next_states.append(next_state)
+                rewards.append(reward)
+
+                # Match has ended
+                if reward != 0:
+                    #reward = np.sign(reward)*10 # cap the score between -1 and 1
+                    rewards = assign_rewards(rewards, reward)
+                    episode_reward = episode_reward + reward
+                    memory.push_all(states, actions, next_states, rewards)
+                    states = []
+                    acions = []
+                    next_states = []
+                    rewards = []
+                state = next_state
+
+                if done:
+                    print("Episode: %d, total reward: %d" % (i_episode, episode_reward))
+                    next_state = None
+                    epsilon = np.max([0.2, epsilon * 0.99])
+                    break
+
+            if i_episode % 5 == 0:
+                agent.optimize(memory, batch_size)
+                memory = ReplayMemory(1000000)
+                torch.save(policy_net.state_dict(), PATH+str(i_episode))
+    else:
+        env.reset()
+        policy_net.load_state_dict(torch.load(PATH))
+        while (True):
+            env.render()
+            current_observation = get_screen(env)
+            previous_observation = get_screen(env)
+            state = current_observation - previous_observation
+            action = agent.get_action(state, epsilon=0)
+
             act = 2 if action == 0 else 3
             _, reward, done, _ = env.step(act)
 
-            previous_observation = current_observation
-            current_observation = get_screen(env)
-            next_state = current_observation - previous_observation
-            # Assign reward according to label
-            states.append(state)
-            actions.append(action)
-            next_states.append(next_state)
-            rewards.append(reward)
-
-            # Match has ended
-            if reward != 0:
-                reward = np.sign(reward) # cap the score between -1 and 1
-                rewards = assign_rewards(rewards, reward)
-                memory.push_all(states, actions, next_states, rewards)
-            state = next_state
-
             if done:
-                next_state = None
-                break
+                env.reset()
 
-        if i_episode % TRAIN_EPISODE == 0:
-            agent.optimize(memory, batch_size)
-            memory = ReplayMemory(64)
 
 if __name__ == "__main__":
     main()
