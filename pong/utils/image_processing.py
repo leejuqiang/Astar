@@ -19,10 +19,10 @@ def preprocess_observation(input_observation):
     processed_observation = downsample(processed_observation)
     processed_observation = remove_background(processed_observation)
     processed_observation[processed_observation != 0] = 1 # everything else (paddles, ball) just set to 1
-
+    # (80, 80)
     # subtract the previous frame from the current one so we are only processing on changes in the game
     # store the previous frame so we can subtract from it next time
-    return processed_observation
+    return np.reshape(processed_observation, (1, 80, 80))
 
 def get_screen(env):
     observation = env.render(mode='rgb_array')

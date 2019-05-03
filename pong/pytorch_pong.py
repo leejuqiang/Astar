@@ -101,29 +101,22 @@ class Agent(object):
     def optimize(self, memory, batch_size):
         optimizer = optim.RMSprop(self.policy_net.parameters())
         loss_func = nn.MSELoss()
-        print(len(memory))
-        for i, batch in enumerate(range(int(len(memory) / batch_size))):
-        #for i, batch in enumerate(range((len(memory) / batch_size))):
-            if i == 500:
-                break
-            batch = memory.sample(batch_size)
-            batch = list(zip(*batch)) # List of columns
-            state_batch = torch.tensor(batch[0], dtype=torch.float)
-            action_batch = torch.tensor(batch[1], dtype=torch.long)
-            next_state_batch = torch.tensor(batch[2], dtype=torch.float)
-            reward_batch = torch.tensor(batch[3], dtype=torch.float)
+        batch = memory.sample(batch_size)
+        batch = list(zip(*batch)) # List of columns
+        state_batch = torch.tensor(batch[0], dtype=torch.float)
+        action_batch = torch.tensor(batch[1], dtype=torch.long)
+        next_state_batch = torch.tensor(batch[2], dtype=torch.float)
+        reward_batch = torch.tensor(batch[3], dtype=torch.float)
 
-            #np.amax(a, axis=1)
-            a = self.target_net(next_state_batch).tolist()
-            target_rewards = np.amax(a, axis=1) * GAMMA + reward_batch.tolist()
-            target_rewards = torch.tensor(target_rewards, dtype=torch.float)
-            policy_rewards = self.policy_net(state_batch).gather(1, action_batch)
-            loss = loss_func(policy_rewards, target_rewards)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-        self._update_target_net()
+        #np.amax(a, axis=1)
+        a = self.target_net(next_state_batch).tolist()
+        target_rewards = np.amax(a, axis=1) * GAMMA + reward_batch.tolist()
+        target_rewards = torch.tensor(target_rewards, dtype=torch.float)
+        policy_rewards = self.policy_net(state_batch).gather(1, action_batch)
+        loss = loss_func(policy_rewards, target_rewards)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
     def _update_target_net(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -154,15 +147,17 @@ def main():
     target_net.load_state_dict(policy_net.state_dict())
     agent = Agent(policy_net, target_net)
 
-    memory = ReplayMemory(1000000)
+    memory = ReplayMemory(1000)
 
     PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/weight"
     train = True
     epsilon = 0.5
+    frame = 1
     if train:
         for i_episode in range(1, num_episodes+1):
             episode_reward = 0
-            #print("i_episode: %d" % i_episode)
+            total_reward = 0
+            print("i_episode: %d" % i_episode)
             states = []
             actions = []
             next_states = []
@@ -182,23 +177,17 @@ def main():
                 previous_observation = current_observation
                 current_observation = get_screen(env)
                 next_state = current_observation - previous_observation
-                # Assign reward according to label
-                states.append(state)
-                actions.append([action])
-                next_states.append(next_state)
-                rewards.append(reward)
-
-                # Match has ended
-                if reward != 0:
-                    #reward = np.sign(reward)*10 # cap the score between -1 and 1
-                    rewards = assign_rewards(rewards, reward)
-                    episode_reward = episode_reward + reward
-                    memory.push_all(states, actions, next_states, rewards)
-                    states = []
-                    acions = []
-                    next_states = []
-                    rewards = []
+                memory._push(state, [action], next_state, reward)
+                if len(memory) >= batch_size:
+                    agent.optimize(memory, batch_size)
                 state = next_state
+                frame += 1
+                if frame % 100 == 0:
+                    print("Frame: %d" % frame)
+                if reward != 0:
+                    total_reward = total_reward + reward
+                if frame % 1000 == 0:
+                    agent._update_target_net()
 
                 if done:
                     print("Episode: %d, total reward: %d" % (i_episode, episode_reward))
@@ -207,8 +196,6 @@ def main():
                     break
 
             if i_episode % 5 == 0:
-                agent.optimize(memory, batch_size)
-                memory = ReplayMemory(1000000)
                 torch.save(policy_net.state_dict(), PATH+str(i_episode))
     else:
         env.reset()
