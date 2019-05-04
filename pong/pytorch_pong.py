@@ -7,6 +7,8 @@ LOG.setLevel(logging.INFO)
 # create a file handler
 handler = logging.FileHandler('weights/test.log')
 handler.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
 
 # create a logging format
 formatter = logging.Formatter('%(asctime)s - %(message)s')
@@ -14,6 +16,7 @@ handler.setFormatter(formatter)
 
 # add the handlers to the logger
 LOG.addHandler(handler)
+LOG.addHandler(ch)
 
 import random
 import gym
@@ -115,22 +118,23 @@ class Agent(object):
     def optimize(self, memory, batch_size):
         optimizer = optim.RMSprop(self.policy_net.parameters())
         loss_func = nn.MSELoss()
-        batch = memory.sample(batch_size)
-        batch = list(zip(*batch)) # List of columns
-        state_batch = torch.tensor(batch[0], dtype=torch.float).to(DEVICE)
-        action_batch = torch.tensor(batch[1], dtype=torch.long).to(DEVICE)
-        next_state_batch = torch.tensor(batch[2], dtype=torch.float).cuda()
-        reward_batch = torch.tensor(batch[3], dtype=torch.float).to(DEVICE)
+        for i in range(int(len(memory) / batch_size)):
+            batch = memory.sample(batch_size)
+            batch = list(zip(*batch)) # List of columns
+            state_batch = torch.tensor(batch[0], dtype=torch.float).to(DEVICE)
+            action_batch = torch.tensor(batch[1], dtype=torch.long).to(DEVICE)
+            next_state_batch = torch.tensor(batch[2], dtype=torch.float).cuda()
+            reward_batch = torch.tensor(batch[3], dtype=torch.float).to(DEVICE)
 
-        a = self.target_net(next_state_batch).tolist()
-        target_rewards = np.amax(a, axis=1) * GAMMA + reward_batch.tolist()
-        target_rewards = torch.tensor(target_rewards, dtype=torch.float).to(DEVICE)
-        policy_rewards = self.policy_net(state_batch).gather(1, action_batch)
-        loss = loss_func(policy_rewards, target_rewards)
-        self.g_loss += loss
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            a = self.target_net(next_state_batch).tolist()
+            target_rewards = np.amax(a, axis=1) * GAMMA + reward_batch.tolist()
+            target_rewards = torch.tensor(target_rewards, dtype=torch.float).to(DEVICE)
+            policy_rewards = self.policy_net(state_batch).gather(1, action_batch)
+            loss = loss_func(policy_rewards, target_rewards)
+            self.g_loss += loss
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
     def _update_target_net(self):
         LOG.info("Loss at update: %.4f" % self.g_loss)
@@ -152,26 +156,28 @@ def main():
     num_classes = 2
     h = 64
     w = 64
-    batch_size = 32
-    num_episodes = 200
+    batch_size = 128
+    num_episodes = 3000
 
     env = gym.make('Pong-v4')
     env.reset()
+
+    #PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/weight"
+    PATH = "/home/jin/workspace/Astar/pong/weights/weight_add_reward"
 
     policy_net = PixelDQN(w, h, num_classes).cuda()
     target_net = PixelDQN(w, h, num_classes).cuda()
     target_net.load_state_dict(policy_net.state_dict())
     agent = Agent(policy_net, target_net)
 
-    memory = ReplayMemory(1000)
+    memory = ReplayMemory(300)
 
-    #PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/weight"
-    PATH = "/home/jin/workspace/Astar/pong/weights/weight"
-    train = True
+    train = False
     epsilon = 0.5
     frame = 1
     LOG.info("New run: total_episodes: %d", num_episodes)
     if train:
+        total_rewards = [0, 0, 0, 0, 0]
         for i_episode in range(1, num_episodes+1):
             total_reward = 0
             LOG.info("i_episode: %d" % i_episode)
@@ -194,28 +200,45 @@ def main():
                 previous_observation = current_observation
                 current_observation = get_screen(env)
                 next_state = current_observation - previous_observation
+
+                states.append(state)
+                actions.append([action])
+                next_states.append(next_state)
+                rewards.append(reward)
+
                 memory._push(state, [action], next_state, reward)
-                if len(memory) >= batch_size:
-                    agent.optimize(memory, batch_size)
-                state = next_state
-                frame += 1
                 if reward != 0:
+                    rewards = assign_rewards(rewards, reward)
+                    memory.push_all(states, actions, next_states, rewards)
+                    agent.optimize(memory, batch_size)
+                    states = []
+                    actions = []
+                    next_states = []
+                    rewards = []
+
                     total_reward = total_reward + reward
-                if frame % 1000 == 0:
-                    agent._update_target_net()
+
+                state = next_state
+                if frame % 10000 == 0:
+                    LOG.info("Frame: %d", frame)
+                frame += 1
 
                 if done:
-                    LOG.info("Episode: %d, total reward: %d" % (i_episode, total_reward))
+                    #LOG.info("Episode: %d, total reward: %d" % (i_episode, total_reward))
                     next_state = None
                     epsilon = np.max([0.2, epsilon * 0.99])
                     break
+            total_rewards[i_episode % 5] = total_reward
+            if i_episode >= 5:
+                LOG.info("Rolling mean: %.4f", np.mean(total_rewards))
 
             if i_episode % 5 == 0:
                 torch.save(policy_net.state_dict(), PATH+str(i_episode))
+                agent._update_target_net()
     else:
         env.reset()
-        policy_net.load_state_dict(torch.load(PATH))
-        while (True):
+        policy_net.load_state_dict(torch.load(PATH+str(3000)))
+        while True:
             env.render()
             current_observation = get_screen(env)
             previous_observation = get_screen(env)
