@@ -1,5 +1,20 @@
 # https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html
 
+import logging
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.INFO)
+
+# create a file handler
+handler = logging.FileHandler('weights/test.log')
+handler.setLevel(logging.INFO)
+
+# create a logging format
+formatter = logging.Formatter('%(asctime)s - %(message)s')
+handler.setFormatter(formatter)
+
+# add the handlers to the logger
+LOG.addHandler(handler)
+
 import random
 import gym
 
@@ -118,7 +133,7 @@ class Agent(object):
         optimizer.step()
 
     def _update_target_net(self):
-        print("Loss at update: %.4f" % self.g_loss)
+        LOG.info("Loss at update: %.4f" % self.g_loss)
         self.g_loss = 0.
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
@@ -155,10 +170,11 @@ def main():
     train = True
     epsilon = 0.5
     frame = 1
+    LOG.info("New run: total_episodes: %d", num_episodes)
     if train:
         for i_episode in range(1, num_episodes+1):
             total_reward = 0
-            print("i_episode: %d" % i_episode)
+            LOG.info("i_episode: %d" % i_episode)
             states = []
             actions = []
             next_states = []
@@ -183,15 +199,13 @@ def main():
                     agent.optimize(memory, batch_size)
                 state = next_state
                 frame += 1
-                #if frame % 100 == 0:
-                #    print("Frame: %d" % frame)
                 if reward != 0:
                     total_reward = total_reward + reward
                 if frame % 1000 == 0:
                     agent._update_target_net()
 
                 if done:
-                    print("Episode: %d, total reward: %d" % (i_episode, total_reward))
+                    LOG.info("Episode: %d, total reward: %d" % (i_episode, total_reward))
                     next_state = None
                     epsilon = np.max([0.2, epsilon * 0.99])
                     break
