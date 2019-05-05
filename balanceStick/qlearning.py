@@ -1,6 +1,7 @@
 import gym
 import torch
 import random
+import json
 
 
 def toByte(n, min, max):
@@ -23,6 +24,19 @@ def obToState(ob):
 
 
 table = [[0 for i in range(256)], [0 for i in range(256)]]
+
+
+def saveToFile(t, num):
+    s = json.dumps(t)
+    f = open("save/bs_" + str(num) + ".json", "w")
+    f.write(s)
+    f.close()
+
+
+def loadFromFile(path):
+    f = open("save/" + path, "r")
+    s = f.read()
+    return json.loads(s)
 
 
 def getAct(state, useGreedy):
@@ -106,6 +120,7 @@ def train(runTimes):
                     maxTable.append(table[0].copy())
                     maxTable.append(table[1].copy())
                 break
+    saveToFile(maxTable, runTimes)
     print("finish training")
     return maxTable
 
@@ -125,9 +140,10 @@ def run(runTimes):
     print(count / runTimes)
 
 
-table = train(200)
+# table = train(200)
 
-for i in range(3):
+table = loadFromFile("bs_200.json")
+for i in range(1):
     run(100)
 
 # 157.17
