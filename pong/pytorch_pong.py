@@ -178,7 +178,7 @@ def main():
     h = 80
     w = 80
     batch_size = 32
-    num_episodes = 5
+    num_episodes = 500
     epsilon = 1
     memory_size = 10000
     train_every_frame = True
