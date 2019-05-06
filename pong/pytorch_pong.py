@@ -1,20 +1,6 @@
 # https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html
 
 import logging
-LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.INFO)
-
-# create a file handler
-handler = logging.FileHandler('weights/test.log')
-handler.setLevel(logging.INFO)
-
-# create a logging format
-formatter = logging.Formatter('%(asctime)s - %(message)s')
-handler.setFormatter(formatter)
-
-# add the handlers to the logger
-LOG.addHandler(handler)
-
 import random
 import gym
 
@@ -27,6 +13,24 @@ import torchvision.transforms as T
 from torch.autograd import Variable
 from utils.image_processing import get_screen
 from torch.utils.data import Dataset, DataLoader
+
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.INFO)
+
+# create a file handler
+handler = logging.FileHandler('weights/test.log')
+handler.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+# create a logging format
+formatter = logging.Formatter('%(asctime)s - %(message)s')
+handler.setFormatter(formatter)
+
+# add the handlers to the logger
+LOG.addHandler(handler)
+LOG.addHandler(ch)
+
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #DEVICE = "cpu"
@@ -66,8 +70,12 @@ class PixelDQN(torch.nn.Module):
         self.bn1 = nn.BatchNorm2d(16)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
         self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
-        self.bn3 = nn.BatchNorm2d(32)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=5, stride=2)
+        self.bn3 = nn.BatchNorm2d(64)
+        self.linear = nn.Linear(64*7*7, 512)
+
+        self.loss = torch.nn.MSELoss()
+        self.optimizer = torch.optim.RMSprop(self.parameters(), lr=0.0001)
 
         self.to(DEVICE)
 
@@ -80,7 +88,7 @@ class PixelDQN(torch.nn.Module):
         convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
         linear_input_size = convw * convh * 32
         #self.head = nn.Linear(linear_input_size, num_classes)
-        self.head = nn.Linear(1568, num_classes)
+        self.head = nn.Linear(512, num_classes)
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
@@ -88,7 +96,8 @@ class PixelDQN(torch.nn.Module):
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
-        x = x.view(-1, 32*7*7)
+        x = x.view(-1, 64*7*7)
+        x = F.relu(self.linear(x))
         #return self.head(x.view(x.size(0), -1))
         return self.head(x)
 
@@ -98,13 +107,8 @@ class Agent(object):
         self.target_net = target_net
         self.update_count = 0
         self.g_loss = 0.
+        self.sync = 1
 
-    """ Returns an action to be performed, either by random or prediction from the
-        network
-        :param model: Model representing the Q
-        :param processed_observation: Current state of the game
-        :return: Action to perform
-    """
     def get_action(self, state, epsilon=0.5):
         rand_prob = random.random()
         if rand_prob < epsilon:
@@ -112,28 +116,47 @@ class Agent(object):
         state = np.expand_dims(state, 0)
         return np.argmax(self.policy_net(torch.tensor(state, dtype=torch.float).to(DEVICE)).tolist())
 
-    def optimize(self, memory, batch_size):
-        optimizer = optim.RMSprop(self.policy_net.parameters())
-        loss_func = nn.MSELoss()
+    def optimize(self, memory, batch_size, every_frame=True):
+        num_train = 1
+        if not every_frame:
+            num_train = int(1000 / batch_size)
+
+        for i in range(num_train):
+            if self.sync % 1000 == 0:
+                self._update_target_net()
+
+            state_batch, action_batch, next_state_batch, reward_batch =\
+                    self.get_batch(memory, batch_size)
+
+            q_targets = self.calculate_q_target(next_state_batch, reward_batch)
+            q_policy = self.policy_net(state_batch).gather(1, action_batch)
+
+            loss = self.policy_net.loss(q_policy, q_targets)
+            self.g_loss += loss
+            self.policy_net.optimizer.zero_grad()
+            loss.backward()
+            self.policy_net.optimizer.step()
+            self.sync += 1
+
+    def get_batch(self, memory, batch_size):
         batch = memory.sample(batch_size)
         batch = list(zip(*batch)) # List of columns
+
         state_batch = torch.tensor(batch[0], dtype=torch.float).to(DEVICE)
         action_batch = torch.tensor(batch[1], dtype=torch.long).to(DEVICE)
         next_state_batch = torch.tensor(batch[2], dtype=torch.float).cuda()
         reward_batch = torch.tensor(batch[3], dtype=torch.float).to(DEVICE)
 
-        a = self.target_net(next_state_batch).tolist()
-        target_rewards = np.amax(a, axis=1) * GAMMA + reward_batch.tolist()
-        target_rewards = torch.tensor(target_rewards, dtype=torch.float).to(DEVICE)
-        policy_rewards = self.policy_net(state_batch).gather(1, action_batch)
-        loss = loss_func(policy_rewards, target_rewards)
-        self.g_loss += loss
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        return state_batch, action_batch, next_state_batch, reward_batch
+
+    def calculate_q_target(self, next_state_batch, reward_batch):
+        q_targets = self.target_net(next_state_batch).tolist()
+        q_targets = np.amax(q_targets, axis=1) * GAMMA + reward_batch.tolist()
+        return torch.tensor(q_targets, dtype=torch.float).to(DEVICE)
 
     def _update_target_net(self):
-        LOG.info("Loss at update: %.4f" % self.g_loss)
+        if (self.sync+1) % 10000 == 0:
+            LOG.info("Loss update at frame: %d,  %.4f" % (self.sync, self.g_loss))
         self.g_loss = 0.
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
@@ -149,32 +172,38 @@ def assign_rewards(rewards, label):
     return rewards
 
 def main():
-    num_classes = 2
-    h = 64
-    w = 64
-    batch_size = 32
-    num_episodes = 200
-
-    env = gym.make('Pong-v4')
+    env = gym.make('PongDeterministic-v4')
     env.reset()
+    num_classes = 6
+    h = 80
+    w = 80
+    batch_size = 32
+    num_episodes = 5
+    epsilon = 1
+    memory_size = 10000
+    train_every_frame = True
+    assign_reward = False
+    min_frames = 100
 
     policy_net = PixelDQN(w, h, num_classes).cuda()
     target_net = PixelDQN(w, h, num_classes).cuda()
     target_net.load_state_dict(policy_net.state_dict())
     agent = Agent(policy_net, target_net)
 
-    memory = ReplayMemory(1000)
+    memory = ReplayMemory(memory_size)
 
-    #PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/weight"
-    PATH = "/home/jin/workspace/Astar/pong/weights/weight"
     train = True
-    epsilon = 0.5
+    name = "trial1_train_every_step_"
+    #PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/weight"
+    PATH = "/home/jin/workspace/Astar/pong/weights/" + name
     frame = 1
     LOG.info("New run: total_episodes: %d", num_episodes)
     if train:
-        for i_episode in range(1, num_episodes+1):
-            total_reward = 0
-            LOG.info("i_episode: %d" % i_episode)
+        rewards_window = [0, 0, 0, 0, 0]
+        total_reward = 0.
+
+        for i_episode in range(num_episodes):
+            episode_reward = 0
             states = []
             actions = []
             next_states = []
@@ -187,35 +216,55 @@ def main():
             state = current_observation
             while True:
                 #env.render()
-                action = agent.get_action(state, epsilon=1)
-                act = 2 if action == 0 else 3
-                _, reward, done, _ = env.step(act)
+                action = agent.get_action(state, epsilon=epsilon)
+                _, reward, done, _ = env.step(action)
 
                 previous_observation = current_observation
                 current_observation = get_screen(env)
                 next_state = current_observation - previous_observation
-                memory._push(state, [action], next_state, reward)
-                if len(memory) >= batch_size:
-                    agent.optimize(memory, batch_size)
+
                 state = next_state
                 frame += 1
+                if train_every_frame:
+                    memory._push(state, [action], next_state, reward)
+                    if frame > min_frames:
+                        agent.optimize(memory, batch_size)
+                else:
+                    states.append(state)
+                    actions.append([action])
+                    next_states.append(next_state)
+                    rewards.append(reward)
+                    if reward != 0:
+                        if assign_reward:
+                            rewards = assign_rewards(rewards, reward)
+                        memory.push_all(states, actions, next_states, rewards)
+                        if frame > min_frames:
+                            agent.optimize(memory, batch_size)
+                        rewards = []
+                        states = []
+                        actions = []
+                        next_states = []
                 if reward != 0:
-                    total_reward = total_reward + reward
-                if frame % 1000 == 0:
-                    agent._update_target_net()
+                    episode_reward += reward
 
                 if done:
-                    LOG.info("Episode: %d, total reward: %d" % (i_episode, total_reward))
+                    rewards_window[i_episode % 5] = episode_reward
+                    total_reward += episode_reward
+                    #LOG.info("Episode: %d, total_mean: %.6f, rolling_mean: %.4f" % (i_episode,
+                    #          total_reward / (i_episode+1), np.mean(rewards_window)))
+                    LOG.info("Episode: %d, total_mean: %.6f" % (i_episode,
+                              total_reward / (i_episode+1)))
                     next_state = None
-                    epsilon = np.max([0.2, epsilon * 0.99])
+                    epsilon = np.max([0.2, epsilon * 0.995])
                     break
-
-            if i_episode % 5 == 0:
+            if (i_episode+1) % 5 == 0:
+                print("Saving!")
                 torch.save(policy_net.state_dict(), PATH+str(i_episode))
     else:
         env.reset()
-        policy_net.load_state_dict(torch.load(PATH))
-        while (True):
+        agent.policy_net.load_state_dict(torch.load(PATH))
+        runs = 3
+        while runs > 0:
             env.render()
             current_observation = get_screen(env)
             previous_observation = get_screen(env)
@@ -227,6 +276,7 @@ def main():
 
             if done:
                 env.reset()
+                runs -= 1
 
 
 if __name__ == "__main__":
