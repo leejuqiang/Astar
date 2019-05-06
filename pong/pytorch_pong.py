@@ -112,7 +112,7 @@ class Agent(object):
     def get_action(self, state, epsilon=0.5):
         rand_prob = random.random()
         if rand_prob < epsilon:
-            return random.randint(UP_ACTION, DOWN_ACTION)
+            return random.randint(0, 5)
         state = np.expand_dims(state, 0)
         return np.argmax(self.policy_net(torch.tensor(state, dtype=torch.float).to(DEVICE)).tolist())
 
@@ -215,7 +215,7 @@ def main():
             previous_observation = get_screen(env)
             state = current_observation
             while True:
-                #env.render()
+                env.render()
                 action = agent.get_action(state, epsilon=epsilon)
                 _, reward, done, _ = env.step(action)
 
