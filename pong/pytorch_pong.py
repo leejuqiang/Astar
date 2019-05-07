@@ -31,9 +31,8 @@ handler.setFormatter(formatter)
 LOG.addHandler(handler)
 LOG.addHandler(ch)
 
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#DEVICE = "cpu"
+#DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = "cpu"
 ALPHA = 0.0001
 UP_ACTION = 0
 DOWN_ACTION = 1
@@ -93,9 +92,12 @@ class PixelDQN(torch.nn.Module):
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
     def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
+        #x = F.relu(self.bn1(self.conv1(x)))
+        #x = F.relu(self.bn2(self.conv2(x)))
+        #x = F.relu(self.bn3(self.conv3(x)))
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
         x = x.view(-1, 64*7*7)
         x = F.relu(self.linear(x))
         #return self.head(x.view(x.size(0), -1))
@@ -144,7 +146,8 @@ class Agent(object):
 
         state_batch = torch.tensor(batch[0], dtype=torch.float).to(DEVICE)
         action_batch = torch.tensor(batch[1], dtype=torch.long).to(DEVICE)
-        next_state_batch = torch.tensor(batch[2], dtype=torch.float).cuda()
+        #next_state_batch = torch.tensor(batch[2], dtype=torch.float).cuda()
+        next_state_batch = torch.tensor(batch[2], dtype=torch.float).to(DEVICE)
         reward_batch = torch.tensor(batch[3], dtype=torch.float).to(DEVICE)
 
         return state_batch, action_batch, next_state_batch, reward_batch
@@ -155,8 +158,7 @@ class Agent(object):
         return torch.tensor(q_targets, dtype=torch.float).to(DEVICE)
 
     def _update_target_net(self):
-        if (self.sync+1) % 10000 == 0:
-            LOG.info("Loss update at frame: %d,  %.4f" % (self.sync, self.g_loss))
+        LOG.info("Loss update at frame: %d,  %.4f" % (self.sync, self.g_loss))
         self.g_loss = 0.
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
@@ -178,24 +180,28 @@ def main():
     h = 80
     w = 80
     batch_size = 32
-    num_episodes = 500
+    num_episodes = 50
     epsilon = 1
     memory_size = 10000
     train_every_frame = True
     assign_reward = False
     min_frames = 100
+    discount_factor = 0.99
 
-    policy_net = PixelDQN(w, h, num_classes).cuda()
-    target_net = PixelDQN(w, h, num_classes).cuda()
+    #if torch.cuda_is_available():
+    #    policy_net = PixelDQN(w, h, num_classes).cuda()
+    #    target_net = PixelDQN(w, h, num_classes).cuda()
+    policy_net = PixelDQN(w, h, num_classes)
+    target_net = PixelDQN(w, h, num_classes)
     target_net.load_state_dict(policy_net.state_dict())
     agent = Agent(policy_net, target_net)
 
     memory = ReplayMemory(memory_size)
 
-    train = True
-    name = "trial1_train_every_step_"
-    #PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/weight"
-    PATH = "/home/jin/workspace/Astar/pong/weights/" + name
+    train = False
+    name = "trial2_train_every_step_49"
+    PATH = "/Users/sjjin/class/cs686/Astar/pong/weights/" + name
+    #PATH = "/home/jin/workspace/Astar/pong/weights/" + name
     frame = 1
     LOG.info("New run: total_episodes: %d", num_episodes)
     if train:
@@ -215,7 +221,7 @@ def main():
             previous_observation = get_screen(env)
             state = current_observation
             while True:
-                env.render()
+                #env.render()
                 action = agent.get_action(state, epsilon=epsilon)
                 _, reward, done, _ = env.step(action)
 
@@ -223,7 +229,6 @@ def main():
                 current_observation = get_screen(env)
                 next_state = current_observation - previous_observation
 
-                state = next_state
                 frame += 1
                 if train_every_frame:
                     memory._push(state, [action], next_state, reward)
@@ -244,18 +249,20 @@ def main():
                         states = []
                         actions = []
                         next_states = []
+                state = next_state
                 if reward != 0:
                     episode_reward += reward
+                epsilon = np.max([0.05, epsilon - 0.000001])
 
                 if done:
                     rewards_window[i_episode % 5] = episode_reward
                     total_reward += episode_reward
-                    #LOG.info("Episode: %d, total_mean: %.6f, rolling_mean: %.4f" % (i_episode,
-                    #          total_reward / (i_episode+1), np.mean(rewards_window)))
-                    LOG.info("Episode: %d, total_mean: %.6f" % (i_episode,
-                              total_reward / (i_episode+1)))
+                    LOG.info("Episode: %d, total_mean: %.6f, rolling_mean: %.4f" % (i_episode,
+                              total_reward / (i_episode+1), np.mean(rewards_window)))
+                    #LOG.info("Episode: %d, total_mean: %.6f" % (i_episode,
+                    #          total_reward / (i_episode+1)))
                     next_state = None
-                    epsilon = np.max([0.2, epsilon * 0.995])
+                    #epsilon = np.max([0.02, epsilon * discount_factor])
                     break
             if (i_episode+1) % 5 == 0:
                 print("Saving!")
@@ -263,16 +270,18 @@ def main():
     else:
         env.reset()
         agent.policy_net.load_state_dict(torch.load(PATH))
-        runs = 3
+        runs = 7
+        current_observation = get_screen(env)
+        previous_observation = None
+        state = current_observation
         while runs > 0:
             env.render()
-            current_observation = get_screen(env)
-            previous_observation = get_screen(env)
-            state = current_observation - previous_observation
             action = agent.get_action(state, epsilon=0)
 
-            act = 2 if action == 0 else 3
-            _, reward, done, _ = env.step(act)
+            _, reward, done, _ = env.step(action)
+            previous_observation = current_observation
+            current_observation = get_screen(env)
+            state = current_observation - previous_observation
 
             if done:
                 env.reset()
