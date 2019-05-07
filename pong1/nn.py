@@ -1,180 +1,233 @@
 import gym
 import torch
+import torch.nn.functional as F
+import numpy as np
+import random
+import copy
+import cv2
+import time
+
 
 class Net(torch.nn.Module):
 
-    def __init__(self, inputN, layers, outputN):
+    def __init__(self):
         super(Net, self).__init__()
         self.rate = 0
         self.opt = None
-        self.cacheP = None
-        self.hidden = torch.nn.ModuleList()
-        last = inputN
-        for l in layers:
-            self.hidden.append(torch.nn.Linear(last, l))
-            last = l
-        self.out = torch.nn.Linear(last, outputN)
+        self.conv1 = torch.nn.Conv2d(4, 32, kernel_size=2, stride=1, padding=0)
+        # self.bn1 = nn.BatchNorm2d(16)
+        self.conv2 = torch.nn.Conv2d(
+            32, 64, kernel_size=2, stride=1, padding=0)
+        # self.bn2 = nn.BatchNorm2d(32)
+        self.conv3 = torch.nn.Conv2d(
+            64, 64, kernel_size=3, stride=1, padding=0)
+        # self.bn3 = nn.BatchNorm2d(64)
+
+        self.fc1 = torch.nn.Linear(12 * 4 * 64, 512)
+        self.fc2 = torch.nn.Linear(512, 6)
+        self.loss = torch.nn.MSELoss()
 
     def forward(self, x):
-        for l in self.hidden:
-            x = torch.sigmoid(l(x))
-        x = self.out(x)
-        return x
+        out = F.relu(self.conv1(x))
+        out = F.relu(self.conv2(out))
+        out = F.relu(self.conv3(out))
 
-    def cacheParameter(self):
-        self.cacheP = []
-        for t in list(self.parameters()):
-            l = t.tolist()
-            self.cacheP.append(l.copy())
-
-    def applyCachedParameter(self):
-        i = 0
-        for h in self.hidden:
-            h.weight.data = torch.tensor(
-                self.cacheP[i]).type(torch.FloatTensor)
-            h.bias.data = torch.tensor(
-                self.cacheP[i + 1]).type(torch.FloatTensor)
-            i += 2
-        self.out.weight.data = torch.tensor(
-            self.cacheP[i]).type(torch.FloatTensor)
-        self.out.bias.data = torch.tensor(
-            self.cacheP[i + 1]).type(torch.FloatTensor)
+        out = out.view(out.size(0), -1)
+        out = F.relu(self.fc1(out))
+        out = self.fc2(out)
+        return out
 
     def initParam(self, rate):
         self.rate = rate
-        self.opt = torch.optim.SGD(self.parameters(), lr=self.rate)
+        self.opt = torch.optim.RMSprop(self.parameters(), lr=self.rate)
 
-    def train(self, x, y, times):
-        lossFun = torch.nn.MSELoss()
-        for i in range(times):
-            out = self(x)
-            loss = lossFun(out, y)
-            self.opt.zero_grad()
-            loss.backward()
-            self.opt.step()
+    def train(self, x, y, actions):
+        acts = torch.tensor(actions).type(torch.LongTensor)
+        out = self(x)
+        out = torch.gather(out, 1, acts)
+        loss = self.loss(out, y)
+        self.opt.zero_grad()
+        loss.backward()
+        self.opt.step()
 
-memMap = {4: 5, 8: 14, 10: 13, 15: 16, 21: 22, 50: 52, 54: 55, 60: 61, 11: 14, 51: 52, 49: 51, 56: 57, 58: 59, 121: 123, 12: 13, 17: 20, 67: 68, 69: 70, 73: 74, 2: 3, 20: 22}
-inputSize = 0
-for k, v in memMap.items():
-    for i in range(k, v + 1):
-        inputSize += 1
+
+class Buffer:
+    def __init__(self, maxSize):
+        self.pool = []
+        self.position = 0
+        self.maxSize = maxSize
+
+    def add(self, state, act, done, next, reward):
+        # act = 0 if act == 2 else 1
+        if len(self.pool) < self.maxSize:
+            self.pool.append([state, [act], done, next, reward])
+        else:
+            self.pool[self.position] = [state, [act], done, next, reward]
+            self.position += 1
+            if self.position >= len(self.pool):
+                self.position = 0
+
+    def size(self):
+        return len(self.pool)
+
+    def sample(self, number):
+        list = random.sample(self.pool, number)
+        states = [list[i][0] for i in range(number)]
+        actions = [list[i][1] for i in range(number)]
+        dones = [list[i][2] for i in range(number)]
+        nextStates = [list[i][3] for i in range(number)]
+        rewards = [list[i][4] for i in range(number)]
+        return states, actions, rewards, dones, nextStates
+
+
+class FrameGroup:
+    def __init__(self, number):
+        self.frames = [None for i in range(number)]
+        self.position = 0
+
+    def addFrame(self, ob):
+        self.frames[self.position] = changeOb(ob)
+        self.position += 1
+        if self.position >= len(self.frames):
+            self.position = 0
+
+    def getOb(self):
+        ret = [None for i in range(len(self.frames))]
+        for i in range(len(ret)):
+            index = self.position + i + 1
+            if index >= len(ret):
+                index -= len(ret)
+            ret[i] = self.frames[index]
+        return ret
+
+
+inputSize = 128
+syncTime = 1000
+frameG = FrameGroup(4)
+# for k, v in memMap.items():
+#     for i in range(k, v + 1):
+#         inputSize += 1
 env = gym.make('Pong-ram-v0')
-nn = Net(inputSize, [10, 10], 2)
-nn.initParam(0.001)
+nn = Net()
+nn.initParam(0.0001)
+qnn = Net()
+buffer = Buffer(10000)
 
-def changeColor(rgb):
-    return rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114
 
-def obToState(ob):
-    global memMap
-    ret = [0 for i in range(inputSize)]
-    index = 0
-    for k, v in memMap.items():
-        for i in range(k, v + 1):
-            ret[index] = ob[i]
-            index += 1
+def syncNN():
+    qnn.load_state_dict(nn.state_dict())
+
+
+def changeOb(ob):
+    ob = np.reshape(ob, [16, 8])
+    return ob
+
+
+def getAction(state, rate):
+    r = random.random()
+    if r < rate:
+        return random.randint(0, 5)
+    state = np.expand_dims(state, 0)
+    x = torch.tensor(state).type(torch.FloatTensor)
+    res = nn(x).tolist()[0]
+    return np.argmax(res)
+
+
+def computeRewards(nextStates, rewards, dones):
+    next = torch.tensor(nextStates).type(torch.FloatTensor)
+    y = qnn(next).tolist()
+    ret = [0 for i in range(len(y))]
+    for i in range(len(y)):
+        r = max(y[i]) if not dones[i] else 0
+        ret[i] = 0.99 * r + rewards[i]
     return ret
 
-def getAction(res):
-    return 2 if res[0] > res[1] else 3
 
-def getOutput(state):
-    x = torch.tensor(state).type(torch.FloatTensor)
-    res = nn(x).tolist()
-    return res
+def resetEnv():
+    env.reset()
+    env.step(1)
+    ob, _, _, _ = env.step(2)
+    for i in range(4):
+        frameG.addFrame(ob)
+    return frameG.getOb()
 
-# def compareOb(ob1, ob2):
-#     global memMap
-#     if ob1 is None:
-#         return
-#     start = -1
-#     for i in range(len(ob1)):
-#         if start < 0:
-#             if ob1[i] != ob2[i]:
-#                 start = i
-#         else:
-#             if ob1[i] == ob2[i]:
-#                 if start in memMap:
-#                     memMap[start] = max(i, memMap[start])
-#                 else:
-#                     memMap[start] = i
-#                 start = -1
 
-def train(runTimes, epoch):
+def trainOnce():
+    states, actions, rewards, dones, nextStates = buffer.sample(32)
+    rs = computeRewards(nextStates, rewards, dones)
+    rs = np.reshape(rs, [32, 1])
+    # rs = [[0, 0]]
+    x = torch.tensor(states).type(torch.FloatTensor)
+    y = torch.tensor(rs).type(torch.FloatTensor)
+    nn.train(x, y, actions)
+
+
+def train(epoch):
+    st = syncTime
+    ob = resetEnv()
+    nextState = ob
+    for i in range(100):
+        state = nextState
+        env.render()
+        act = getAction(state, 1)
+        lastOb = ob
+        ob, reward, done, info = env.step(act)
+        frameG.addFrame(ob)
+        nextState = frameG.getOb()
+        buffer.add(state, act, done, nextState, reward)
+    print("start to train")
+    randomRate = 0.8
     for j in range(epoch):
+        count = 0
         total = 0
-        x = []
-        y = []
-        while total < runTimes:
-            acts = []
-            outputs = []
-            obs = []
-            ob = env.reset()
-            for i in range(10000):
-                env.render()
-                state = obToState(ob)
-                obs.append(state)
-                out = getOutput(state)
-                act = getAction(out)
-                acts.append(act)
-                outputs.append(out)
-                ob, reward, done, info = env.step(act)
-                if reward != 0:
-                    total += 1
-                    # r = -10
-                    # if reward > 0:
-                    #     r = -r
-                    r = 1
-                    for k in range(len(obs)):
-                        i = len(obs) - 1 - k
-                        # if acts[i] == 2:
-                        #     outputs[i][0] += r
-                        #     outputs[i][1] -= r
-                        # else:
-                        #     outputs[i][0] -= r
-                        #     outputs[i][1] += r
-                        if reward < 0:
-                            outputs[i][0], outputs[i][1] = outputs[i][1] * r, outputs[i][0] * r
-                        else:
-                            outputs[i][0], outputs[i][1] = outputs[i][0] * r, outputs[i][1] * r
-                        if k >= 10:
-                            break
-                        # r *= 0.95
-                        y.append(outputs[i])
-                        x.append(obs[i])
-                if done:
-                    break
-        x = torch.tensor(x).type(torch.FloatTensor)
-        y = torch.tensor(y).type(torch.FloatTensor)
-        nn.train(x, y, 100)
-        print("finish train " + str(j))
-
-def run(runTimes):
-    count = 0
-    total = 0
-    while total < runTimes:
-        ob = env.reset()
-        for i in range(10000):
+        done = False
+        ob = resetEnv()
+        nextState = ob
+        while not done:
+            state = nextState
             env.render()
-            state = obToState(ob)
-            out = getOutput(state)
-            act = getAction(out)
+            act = getAction(state, randomRate)
             ob, reward, done, info = env.step(act)
+            frameG.addFrame(ob)
+            nextState = frameG.getOb()
+            buffer.add(state, act, done, nextState, reward)
+            trainOnce()
+            if randomRate > 0.02:
+                randomRate -= 0.00001
+            st -= 1
+            if st <= 0:
+                print("sync net")
+                syncNN()
+                st = syncTime
             if reward != 0:
-                total += 1
-                if reward > 0:
-                    count += 1
-            if done:
-                break
-    env.close()
-    print("win " + str(count) + " total " + str(runTimes))
+                total += reward
+        print("finish train " + " epoch " + str(j) + " reward " + str(total))
+        if j % 10 == 0:
+            torch.save(nn.state_dict(), "save/nnram_" + str(j) + ".txt")
+    print("finish all train")
 
-train(100, 50)
-print(memMap)
 
-for i in range(3):
-    run(200)
+def run(times):
+    for i in range(times):
+        ob = resetEnv()
+        nextState = ob
+        done = False
+        while not done:
+            state = nextState
+            env.render()
+            act = getAction(state, 0)
+            lastOb = ob
+            ob, reward, done, info = env.step(act)
+            frameG.addFrame(ob)
+            nextState = frameG.getOb()
+            time.sleep(0.03)
 
+
+# train(200)
+# torch.save(nn.state_dict(), "save/nnram.txt")
+
+nn.load_state_dict(torch.load("save/nnram_180.txt"))
+run(3)
 
 # win 6 total 200
 # win 11 total 200
